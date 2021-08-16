@@ -115,5 +115,4 @@ drugprot-training-development-test-background.zip
 model_aug10/
 runs/
 biobert-v1.1/
-chemprotLabelEncoder.pkl
-
+large-scale-drugprot.zip

@@ -167,9 +167,89 @@ def reformat_data(abstract_file, relation_ref_dict, entity_span_dict):
     return processed_data_mask
 
 
+
+def reformat_data_test(abstract_file, entity_span_dict):
+    # Traversing abstract, and finding candidates with exact one chem
+    # and one gene
+    
+    with open(abstract_file, 'r') as f:
+        abstract_data = f.readlines()
+
+    processed_data_mask = []
+    for line in abstract_data:
+        doc_id, text = line.split('\t', 1)
+        sents = customized_sent_tokenize(text)
+        entity_candidates = entity_span_dict[doc_id]
+        prev_span_end = 0
+        for sent in sents:
+            # Extacting span of cur sent.
+            sent_span_s = text.find(sent, prev_span_end)
+            sent_span_e = sent_span_s + len(sent)
+            prev_span_end = sent_span_e
+            chem_list = []
+            gene_list = []
+            for entity_candidate in entity_candidates:
+                e_id, type, entity_span_s, entity_span_e, content = \
+                    entity_candidate
+                if entity_span_s >= sent_span_s and entity_span_e \
+                        <= sent_span_e:
+                    if "CHEMICAL" in type:
+                        chem_list.append(entity_candidate)
+                    else:
+                        gene_list.append(entity_candidate)
+            #import ipdb; ipdb.set_trace();
+            if len(chem_list) == 0 or len(gene_list) == 0:
+                continue
+            #import ipdb; ipdb.set_trace();
+            # Preparing data with appending method
+            for chem_candidate in chem_list:
+                for gene_candidate in gene_list:
+
+                    # Denoting the first entity entity 1.
+                    if chem_candidate[2] < gene_candidate[2]:
+                        e1_candidate, e2_candidate = \
+                            chem_candidate, gene_candidate
+                    else:
+                        e2_candidate, e1_candidate = \
+                            chem_candidate, gene_candidate
+                    e1_id, e1_type, e1_span_s, e1_span_e, e1_content = \
+                        e1_candidate
+                    e2_id, e2_type, e2_span_s, e2_span_e, e2_content = \
+                        e2_candidate
+                    #label = "false"
+
+                    processed_doc_id = f"{doc_id}.{e1_id}.{e2_id}"
+
+                    # if doc_id in relation_ref_dict:
+                    #     if (e1_id, e2_id) in relation_ref_dict[doc_id]:
+                    #         label = relation_ref_dict[doc_id][(e1_id, e2_id)]
+                    #     elif (e2_id, e1_id) in relation_ref_dict[doc_id]:
+                    #         label = relation_ref_dict[doc_id][(e2_id, e1_id)]
+
+                    e1_span_s, e1_span_e, e2_span_s, e2_span_e = \
+                        e1_span_s - sent_span_s, e1_span_e - sent_span_s, \
+                        e2_span_s - sent_span_s, e2_span_e - sent_span_s
+                    # split sent into chunks
+                    chunks = split_sent(
+                        e1_span_s, e1_span_e, e2_span_s, e2_span_e, sent)
+                    if len(chunks) == 5:
+                        chunk1, chunk2_e1, chunk3, chunk4_e2, chunk5 = chunks
+                        processed_sent_mask = \
+                            f"{chunk1}@{e1_type}${chunk3}@{e2_type}${chunk5}"
+                    else:
+                        chunk1, chunk2_entity, chunk3 = chunks
+                        entity_type = "CHEM-GENE"
+                        processed_sent_mask = \
+                            f"{chunk1}@{entity_type}${chunk3}"
+
+                    # Forming sent using mask method
+                    processed_data_mask.append(
+                        f"{processed_doc_id}\t{clean_sent(processed_sent_mask)}\n")
+    return processed_data_mask
+
 def prepare_drugprot_data(root_dir, output_dir):
     # add test data_type after test set is released.
-    data_types = ['train', 'dev']
+    data_types = ['train', 'dev', 'test']
     target_labels = [ "INDIRECT-DOWNREGULATOR", "INDIRECT-UPREGULATOR", "DIRECT-REGULATOR", "ACTIVATOR", "INHIBITOR", "AGONIST", "ANTAGONIST", "AGONIST-ACTIVATOR", "AGONIST-INHIBITOR", "PRODUCT-OF", "SUBSTRATE", "SUBSTRATE_PRODUCT-OF","PART-OF"]
 
     # Only the training and dev dataset is provided for drug prot. When the test data is provided, 
@@ -189,21 +269,29 @@ def prepare_drugprot_data(root_dir, output_dir):
         else:
             data_path = os.path.join(
                 root_dir, 'test-background/')
-            file_name_prefix = "drugprot_test_"
+            file_name_prefix = "test_background_"
             file_name_affixe = ""
 
-        relations_file = os.path.join(
-            data_path, f"{file_name_prefix}relations{file_name_affixe}.tsv")
-        entities_file = os.path.join(
-            data_path, f"{file_name_prefix}entities{file_name_affixe}.tsv")
-        abstract_file = os.path.join(
-            data_path, f"{file_name_prefix}abstracts{file_name_affixe}.tsv")
+        if data_type != 'test':
+            relations_file = os.path.join(
+                data_path, f"{file_name_prefix}relations{file_name_affixe}.tsv")
+            entities_file = os.path.join(
+                data_path, f"{file_name_prefix}entities{file_name_affixe}.tsv")
+            abstract_file = os.path.join(
+                data_path, f"{file_name_prefix}abstracts{file_name_affixe}.tsv")
+            relation_ref_dict = extract_relation_dict(relations_file, target_labels)
+            entity_span_dict = extract_entity_dict(entities_file)
+            processed_data_mask = reformat_data(abstract_file, relation_ref_dict, entity_span_dict)
+        else:
+            entities_file = os.path.join(
+                data_path, f"{file_name_prefix}entities{file_name_affixe}.tsv")
+            abstract_file = os.path.join(
+                data_path, f"{file_name_prefix}abstracts{file_name_affixe}.tsv")
+            entity_span_dict = extract_entity_dict(entities_file)
+            processed_data_mask = reformat_data_test(abstract_file, entity_span_dict)
+
         
-        relation_ref_dict = extract_relation_dict(
-            relations_file, target_labels)
-        entity_span_dict = extract_entity_dict(entities_file)
-        processed_data_mask = reformat_data(
-            abstract_file, relation_ref_dict, entity_span_dict)
+        
         # Dumping data.
         dump_processed_data(output_dir, data_type, processed_data_mask)
 

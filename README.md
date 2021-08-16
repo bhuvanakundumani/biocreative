@@ -2,8 +2,20 @@ download the trainign and development files from https://biocreative.bioinformat
 
 Unzip the files.
 
-Run this command to generate train.tsv, dev.tsv and test.tsv
-```
-python drugprot_pytorch.py -output model_aug10 -overwrite true
+Run this command to generate train.tsv, dev.tsv and test.tsv in the folder processed_data.
 
 ```
+python preprocess.py
+
+```
+# errors in bioelectra to be fixed
+
+supported modeltype : ['biobert', 'pubmedbert','bioelectra']
+To run the model
+```
+python drugprot_pytorch.py -output model_aug16_biobert -modeltype biobert -overwrite true -lr 3e-5 -epochs 1 
+
+```
+
+
+
