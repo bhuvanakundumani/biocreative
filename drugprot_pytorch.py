@@ -16,9 +16,8 @@ from sklearn.metrics import precision_recall_fscore_support
 
 from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import Dataset, DataLoader
-from transformers import BertTokenizer, BertModel, AdamW,  get_linear_schedule_with_warmup
-from transformers import AutoTokenizer, AutoModelForPreTraining
-from transformers import AutoTokenizer, AutoModel
+from transformers import AdamW,  get_linear_schedule_with_warmup
+from transformers import AutoConfig, AutoTokenizer, AutoModel
 
 from torch.utils.tensorboard import SummaryWriter
 writer = SummaryWriter()
@@ -32,7 +31,15 @@ parser = argparse.ArgumentParser()
 parser.add_argument("-output", default=None, type=str, required=True, help="Output folder where model weights, metrics, preds will be saved")
 parser.add_argument("-overwrite", default=False, type=bool, help="Set it to True to overwrite output directory")
 # yet to implement BioELECTRA
+
 parser.add_argument("-modeltype", default=None, type=str, help="model used [biobert,pubmedbert]", required=True)
+parser.add_argument("-max_seq_length", default=256, type=int, help="The maximum total input sequence length after WordPiece tokenization. Sequences longer than this will be truncated, and sequences shorter than this will be padded.")
+parser.add_argument("-do_lower_case", action='store_true', help="Set this flag if you are using an uncased model.")
+
+parser.add_argument("-train_batch_size", default=32, type=int, help="Train batch size for training.")
+parser.add_argument("-valid_batch_size", default=32, type=int, help="Valid batch size for training.")
+parser.add_argument("-test_batch_size", default=32, type=int, help="Test batch size for evaluation.")
+
 parser.add_argument("-lr", default=5e-5, type=float, help="learning rate")
 parser.add_argument("-epochs", default=5, type=int, help="epochs for training")
 parser.add_argument("--local_rank",
@@ -53,6 +60,8 @@ parser.add_argument("--adam_epsilon", default=1e-8, type=float,
                     help="Epsilon for Adam optimizer.")
 parser.add_argument("--max_grad_norm", default=1.0, type=float,
                     help="Max gradient norm.")
+parser.add_argument('--gradient_accumulation_steps', type=int, default=1,
+                        help="Number of updates steps to accumulate before performing a backward/update pass.")
 
 args = parser.parse_args()
 
@@ -84,27 +93,50 @@ def set_seed(seed):
     os.environ['PYTHONHASHSEED'] = str(seed)
 
 # Defining some key variables that will be used later on in the training
-MAX_LEN = 256
-TRAIN_BATCH_SIZE = 32
-VALID_BATCH_SIZE = 32
-TEST_BATCH_SIZE = 32
+MAX_LEN = args.max_seq_length
+TRAIN_BATCH_SIZE = args.train_batch_size
+VALID_BATCH_SIZE = args.valid_batch_size
+TEST_BATCH_SIZE = args.test_batch_size
 EPOCHS = args.epochs
 LEARNING_RATE = args.lr
-n = 768
-gradient_accumulation_steps = 1
+gradient_accumulation_steps = args.gradient_accumulation_steps
 num_labels = 14
+
+
+MODEL_CLASSES = {
+    'biobert': "biobert-v1.1",
+    'pubmedbert': "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract",
+    'bioelectra': "kamalkraj/bioelectra-base-discriminator-pubmed",
+}
+
+
 
 cols = ["index", "sentence", "label"]
 df_train = pd.read_csv("processed_data/train.tsv", sep='\t', names=cols)
 df_train = df_train.drop("index", axis=1)
-LE = LabelEncoder()
-df_train['label'] = LE.fit_transform(df_train.label.values)
-print(LE.classes_)
-pickle.dump(LE, open("drugprotLabelEncoder.pkl", 'wb'))
+
+# creating label map
+label_list = df_train['label'].unique()
+label_list.sort()
+label_map = {label : i for i, label in enumerate(label_list)}
+print(label_map)
+# assigning numbers to labels in df_train
+df_train_labels = df_train.label.values.tolist()
+train_labels = []
+for label in df_train_labels:
+    train_labels.append(label_map[label])
+df_train["label"] = train_labels
 
 df_valid = pd.read_csv("processed_data/dev.tsv", sep='\t', names=cols)
 df_valid = df_valid.drop("index", axis=1)
-df_valid['label'] = LE.transform(df_valid.label.values)
+
+# assigning numbers to labels in df_valid
+df_valid_labels = df_valid.label.values.tolist()
+valid_labels = []
+for label in df_valid_labels:
+    valid_labels.append(label_map[label])
+df_valid["label"] = valid_labels
+
 
 #Loading test dataset 
 cols = ["index", "sentence"]
@@ -114,28 +146,23 @@ df_test = df_test.drop("index", axis=1)
 print(df_train.head())
 print(df_valid.head())
 print(df_test.head())
-# df_train = df_train[0:1000]
-# df_valid = df_valid[0:100]
+df_train = df_train[0:1000]
+df_valid = df_valid[0:100]
+df_test = df_test[0:100]
 
 train_examples = df_train.shape[0]
 num_train_optimization_steps = int(train_examples /TRAIN_BATCH_SIZE / gradient_accumulation_steps) * EPOCHS
-bioelectra = False
 
-if args.modeltype == 'biobert':
-    tokenizer = BertTokenizer.from_pretrained("biobert-v1.1", do_lower_case=False)
-    model = BertModel.from_pretrained("biobert-v1.1")
-elif  args.modeltype == 'pubmedbert':
-    tokenizer = AutoTokenizer.from_pretrained("microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract")
-    model = AutoModel.from_pretrained("microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract")
-elif args.modeltype =='bioelectra':
-    tokenizer = AutoTokenizer.from_pretrained("kamalkraj/bioelectra-base-discriminator-pubmed")
-    model = AutoModelForPreTraining.from_pretrained("kamalkraj/bioelectra-base-discriminator-pubmed")
-    bioelectra = True
+config = AutoConfig.from_pretrained(MODEL_CLASSES[args.modeltype])
+tokenizer = AutoTokenizer.from_pretrained(MODEL_CLASSES[args.modeltype], do_lower_case=args.do_lower_case)
+model = AutoModel.from_pretrained(MODEL_CLASSES[args.modeltype], config=config)
+
+bioelectra = False if args.modeltype != 'bioelectra' else True
+n = config.hidden_size
 
 class CustomDataset(Dataset):
 
     def __init__(self, dataframe, tokenizer, max_len):
-        #import ipdb; ipdb.set_trace();
         self.tokenizer = tokenizer
         self.data = dataframe
         self.comment_text = dataframe.sentence
@@ -256,7 +283,6 @@ if n_gpu > 1:
 def loss_fn(outputs, targets):
     return torch.nn.CrossEntropyLoss()(outputs, targets)
 
-
 def train(epoch):
     model.train()
     running_loss = []
@@ -321,9 +347,9 @@ for epoch in range(EPOCHS):
 
 with open(f"{args.output}/{args.modeltype}results.txt","w") as f:
 #with open(os.path.join(args.output, "results.txt"), "w") as f:
-    f.write(f"Train loss for {EPOCHS} is  {str(train_loss)}")
+    f.write(f"Train loss for epoch : {EPOCHS} is  {str(train_loss)}")
     f.write("\n")
-    f.write(f"valid loss for {EPOCHS} is  {str(valid_loss)}")
+    f.write(f"valid loss for epoch : {EPOCHS} is  {str(valid_loss)}")
 
 torch.save(model,os.path.join(args.output,"model.pt"))
 
@@ -359,13 +385,15 @@ print("Validation METRICS")
 outputs, targets = valid_togen_metrics()
 pickle.dump(outputs, open(f"{args.output}/{args.modeltype}valid_scores.pkl","wb"))
 
-_,_,f1_score_micro,s = precision_recall_fscore_support(y_pred=outputs, y_true=targets, labels=[0,1,2,3,4,5,6,7,8,9,10,11,12], average="micro")
+_,_,f1_score_micro,s = precision_recall_fscore_support(y_pred=outputs, 
+# excluding false which is 13 in the label_map
+y_true=targets, labels=[0,1,2,3,4,5,6,7,8,9,10,11,12], average="micro")
 
 print(f"F1 Score (Micro) for validation dataset = {f1_score_micro}\n")
 with open(f"{args.output}/{args.modeltype}f1score.txt","w") as file:
     file.write("\nF1 Score (Micro) " + str(f1_score_micro))
-    file.write("for learning rate" + str(LEARNING_RATE))
-    file.write("\n"+str(LE.classes_))
+    file.write(" for learning rate " + str(LEARNING_RATE))
+    file.write("\n Label map is " +str(label_map))
 
 
 def test():
@@ -388,7 +416,7 @@ def test():
     return fin_outputs
 
 test_preds = test()
-print(test_preds)
+#print(test_preds)
 
 pickle.dump(test_preds, open(f"{args.output}/{args.modeltype}preds.pkl","wb"))
 
