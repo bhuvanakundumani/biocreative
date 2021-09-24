@@ -1,7 +1,6 @@
 #command to run
 #python drugprot_pytorch.py -output model_aug16_biobert -modeltype biobert -overwrite true -lr 3e-5 -epochs 1 
 
-#from _typeshed import NoneType
 import os
 import torch
 import pickle
@@ -30,9 +29,8 @@ parser = argparse.ArgumentParser()
 
 parser.add_argument("-output", default=None, type=str, required=True, help="Output folder where model weights, metrics, preds will be saved")
 parser.add_argument("-overwrite", default=False, type=bool, help="Set it to True to overwrite output directory")
-# yet to implement BioELECTRA
 
-parser.add_argument("-modeltype", default=None, type=str, help="model used [biobert,pubmedbert]", required=True)
+parser.add_argument("-modeltype", default=None, type=str, help="model used [biobert,pubmedbert,bioelectra ]", required=True)
 parser.add_argument("-max_seq_length", default=256, type=int, help="The maximum total input sequence length after WordPiece tokenization. Sequences longer than this will be truncated, and sequences shorter than this will be padded.")
 parser.add_argument("-do_lower_case", action='store_true', help="Set this flag if you are using an uncased model.")
 
@@ -112,7 +110,16 @@ MODEL_CLASSES = {
 
 
 cols = ["index", "sentence", "label"]
-df_train = pd.read_csv("processed_data/train.tsv", sep='\t', names=cols)
+# concatenating chemprot data
+df_trainchemprot = pd.read_csv("processed_chemprotdata/train.tsv", sep='\t', names=cols)
+df_validchemprot = pd.read_csv("processed_chemprotdata/dev.tsv", sep='\t', names=cols)
+df_testchemprot = pd.read_csv("processed_chemprotdata/test.tsv", sep='\t', names=cols)
+df_chemprot = pd.concat([df_trainchemprot, df_validchemprot, df_testchemprot],  ignore_index=True)
+
+
+df_traindrugprot = pd.read_csv("processed_data/train.tsv", sep='\t', names=cols)
+
+df_train = pd.concat([df_chemprot, df_traindrugprot], ignore_index=True )
 df_train = df_train.drop("index", axis=1)
 
 # creating label map
@@ -120,6 +127,7 @@ label_list = df_train['label'].unique()
 label_list.sort()
 label_map = {label : i for i, label in enumerate(label_list)}
 print(label_map)
+
 # assigning numbers to labels in df_train
 df_train_labels = df_train.label.values.tolist()
 train_labels = []
@@ -146,9 +154,9 @@ df_test = df_test.drop("index", axis=1)
 print(df_train.head())
 print(df_valid.head())
 print(df_test.head())
-df_train = df_train[0:1000]
-df_valid = df_valid[0:100]
-df_test = df_test[0:100]
+# df_train = df_train[0:1000]
+# df_valid = df_valid[0:100]
+# df_test = df_test[0:100]
 
 train_examples = df_train.shape[0]
 num_train_optimization_steps = int(train_examples /TRAIN_BATCH_SIZE / gradient_accumulation_steps) * EPOCHS
@@ -246,12 +254,12 @@ class BERTClass(torch.nn.Module):
         # to fix bioelectra
         if self.bioelectra:
             output_1 = self.l1(ids, attention_mask = mask, token_type_ids = token_type_ids,return_dict=False)
-            output_2 = self.l2(output_1[0])
+            output_2 = self.l2(output_1[-1][:,0])
+            
         else:
             _,output_1 = self.l1(ids, attention_mask = mask, token_type_ids = token_type_ids, return_dict=False)
             output_2 = self.l2(output_1)
         output = self.l3(output_2)
-
         return output
 
 model = BERTClass(model, bioelectra)
@@ -288,6 +296,7 @@ def train(epoch):
     running_loss = []
     #train_loss = []
     for batch_idx,data in tqdm(enumerate(training_loader, 0)):
+        # import ipdb; ipdb.set_trace();
         ids = data['ids'].to(device, dtype = torch.long)
         mask = data['mask'].to(device, dtype = torch.long)
         token_type_ids = data['token_type_ids'].to(device, dtype = torch.long)
@@ -346,7 +355,6 @@ for epoch in range(EPOCHS):
     valid_loss.append(avg_valid_loss)
 
 with open(f"{args.output}/{args.modeltype}results.txt","w") as f:
-#with open(os.path.join(args.output, "results.txt"), "w") as f:
     f.write(f"Train loss for epoch : {EPOCHS} is  {str(train_loss)}")
     f.write("\n")
     f.write(f"valid loss for epoch : {EPOCHS} is  {str(valid_loss)}")
@@ -422,5 +430,4 @@ pickle.dump(test_preds, open(f"{args.output}/{args.modeltype}preds.pkl","wb"))
 
 
 with open(f"{args.output}/{args.modeltype}preds.txt","w") as f:
-#with open(os.path.join(args.output, "results.txt"), "w") as f:
     f.write(f"{str(test_preds)}")
